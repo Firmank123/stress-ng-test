@@ -3,12 +3,10 @@
 LOG="$1"
 
 HAS_PSI=1
-if ! grep -q "avg10" "$LOG"; then
-    HAS_PSI=0
-fi
+grep -q "avg10" "$LOG" || HAS_PSI=0
 
-BEFORE=$(awk '/VMSTAT BEFORE/{flag=1;next}/PSI BEFORE/{flag=0}flag' "$LOG")
-AFTER=$(awk '/VMSTAT AFTER/{flag=1;next}/PSI AFTER/{flag=0}flag' "$LOG")
+BEFORE=$(awk '/VMSTAT BEFORE/{f=1;next}/PSI BEFORE/{f=0}f' "$LOG")
+AFTER=$(awk '/VMSTAT AFTER/{f=1;next}/PSI AFTER/{f=0}f' "$LOG")
 
 get_val() {
     echo "$2" | grep "^$1 " | awk '{print $2}'
@@ -22,7 +20,6 @@ delta() {
     echo $((A - B))
 }
 
-# ===== MM =====
 PGSCAN=$(( $(delta pgscan_kswapd) + $(delta pgscan_direct) ))
 PGSTEAL=$(( $(delta pgsteal_kswapd) + $(delta pgsteal_direct) ))
 REFAULT=$(delta workingset_refault)
@@ -34,14 +31,13 @@ EFF=0
 REF=0
 [ "$PGSTEAL" -gt 0 ] && REF=$((REFAULT * 100 / PGSTEAL))
 
-NO_RECLAIM=0
 if [ "$PGSCAN" -eq 0 ] && [ "$DIRECT" -eq 0 ]; then
-    MM_SCORE=95
-    NO_RECLAIM=1
+    MM_SCORE=60
+    MODE="IDEAL"
 else
     MM_SCORE=$((EFF - REF))
+    MODE="PRESSURE"
 
-    # soft penalty
     if [ "$DIRECT" -gt 10000 ]; then
         MM_SCORE=$((MM_SCORE - 25))
     elif [ "$DIRECT" -gt 1000 ]; then
@@ -52,7 +48,7 @@ fi
 [ "$MM_SCORE" -lt 0 ] && MM_SCORE=0
 [ "$MM_SCORE" -gt 100 ] && MM_SCORE=100
 
-# ===== PSI =====
+# PSI
 if [ "$HAS_PSI" -eq 1 ]; then
     PSI_MEM=$(grep "some avg10" "$LOG" | tail -n1 | awk '{print $4}' | cut -d= -f2 | cut -d. -f1)
     PSI_CPU=$(grep "cpu" -A1 "$LOG" | grep avg10 | awk '{print $2}' | cut -d= -f2 | cut -d. -f1)
@@ -67,7 +63,7 @@ fi
 PSI_SCORE=$((100 - PSI_MEM - PSI_CPU))
 [ "$PSI_SCORE" -lt 0 ] && PSI_SCORE=0
 
-# ===== SCHED =====
+# SCHED
 LOAD=$(awk '/LOADAVG/{getline; print $1}' "$LOG" | cut -d. -f1)
 RUNQ=$(awk '/RUNQUEUE/{getline; print $2}' "$LOG")
 
@@ -77,27 +73,16 @@ RUNQ=$(awk '/RUNQUEUE/{getline; print $2}' "$LOG")
 [ "$LOAD" -gt 16 ] && LOAD=16
 [ "$RUNQ" -gt 16 ] && RUNQ=16
 
-P_CPU=$((PSI_CPU * 2))
-P_RUNQ=$((RUNQ * 2))
-P_LOAD=$((LOAD * 1))
-
-TOTAL=$((P_CPU + P_RUNQ + P_LOAD))
+TOTAL=$((PSI_CPU*2 + RUNQ*2 + LOAD))
 [ "$TOTAL" -gt 100 ] && TOTAL=100
 
 SCHED_SCORE=$((100 - TOTAL))
 [ "$SCHED_SCORE" -lt 0 ] && SCHED_SCORE=0
 
-# ===== MODE =====
-if [ "$NO_RECLAIM" -eq 1 ]; then
-    MODE="IDEAL"
-else
-    MODE="PRESSURE"
-fi
-
-# ===== OUTPUT =====
 echo "MM_SCORE=$MM_SCORE"
 echo "SCHED_SCORE=$SCHED_SCORE"
 echo "PSI_SCORE=$PSI_SCORE"
+echo "MODE=$MODE"
 
 echo ""
 echo "==== DETAIL ===="

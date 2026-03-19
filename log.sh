@@ -1,20 +1,51 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-STATUS_FILE="/sdcard/kernel_test_logs/status.tmp"
+RUN_ID="$1"
 
-echo "=== LIVE RUN STATUS ==="
+while IFS= read -r line || [ -n "$line" ]; do
 
-LAST=""
+    case "$line" in
 
-while true; do
-    if [ -f "$STATUS_FILE" ]; then
-        CUR=$(cat "$STATUS_FILE")
+        *"CLEAN STATE"*)
+            echo "[`date +%H:%M:%S`] Run $RUN_ID: CLEAN STATE"
+        ;;
 
-        if [ "$CUR" != "$LAST" ]; then
-            echo "[$(date +%H:%M:%S)] $CUR"
-            LAST="$CUR"
-        fi
-    fi
+        *"PRELOAD MEMORY"*)
+            echo "[`date +%H:%M:%S`] Run $RUN_ID: PRELOAD"
+        ;;
 
-    sleep 0.5
+        *"VMSTAT BEFORE"*)
+            echo "[`date +%H:%M:%S`] Run $RUN_ID: VMSTAT BEFORE"
+        ;;
+
+        *"PSI BEFORE"*)
+            echo "[`date +%H:%M:%S`] Run $RUN_ID: PSI BEFORE"
+        ;;
+
+        *"STRESS"*)
+            echo "[`date +%H:%M:%S`] Run $RUN_ID: STRESS RUNNING"
+        ;;
+
+        *"VMSTAT AFTER"*)
+            echo "[`date +%H:%M:%S`] Run $RUN_ID: VMSTAT AFTER"
+        ;;
+
+        *"PSI AFTER"*)
+            echo "[`date +%H:%M:%S`] Run $RUN_ID: PSI AFTER"
+        ;;
+
+        *"LOADAVG"*)
+            echo "[`date +%H:%M:%S`] Run $RUN_ID: LOADAVG"
+        ;;
+
+        *"RUNQUEUE"*)
+            echo "[`date +%H:%M:%S`] Run $RUN_ID: RUNQUEUE"
+        ;;
+
+        *"EAS TEST"*)
+            echo "[`date +%H:%M:%S`] Run $RUN_ID: EAS TEST"
+        ;;
+
+    esac
+
 done
