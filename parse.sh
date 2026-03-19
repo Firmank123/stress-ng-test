@@ -1,158 +1,113 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-LOG_FILE="$1"
+LOG="$1"
 
-if [ -z "$LOG_FILE" ]; then
-    echo "Usage: ./parse.sh <log_file>"
-    exit 1
+HAS_PSI=1
+if ! grep -q "avg10" "$LOG"; then
+    HAS_PSI=0
 fi
 
-echo "=== ANALYZE KERNEL TEST ==="
-echo "File: $LOG_FILE"
-echo ""
-
-# =========================
-# 🔥 SCHED (CPU)
-# =========================
-echo "==== SCHED (CPU) ===="
-
-BOGO=$(grep "stress-ng: metrc:" "$LOG_FILE" | grep "cpu" | tail -n 1 | awk '{for(i=NF;i>0;i--) if ($i ~ /^[0-9.]+$/) {print $i; break}}')
-
-if ! echo "$BOGO" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
-    BOGO="FAILED"
-fi
-
-echo "Bogo ops/s: $BOGO"
-echo ""
-
-# =========================
-# 🔥 EXTRACT VMSTAT BLOCKS
-# =========================
-BEFORE=$(awk '/==== VMSTAT BEFORE ====/{flag=1;next}/==== STRESS TEST ====/{flag=0}flag' "$LOG_FILE")
-AFTER=$(awk '/==== VMSTAT AFTER ====/{flag=1;next}/==== MEMINFO ====/{flag=0}flag' "$LOG_FILE")
-
-# fallback (old log)
-if [ -z "$BEFORE" ] || [ -z "$AFTER" ]; then
-    echo "⚠️ No BEFORE/AFTER found → fallback to snapshot mode"
-    VMSTAT=$(awk '/==== VMSTAT ====/{flag=1;next}/==== MEMINFO ====/{flag=0}flag' "$LOG_FILE")
-    BEFORE="$VMSTAT"
-    AFTER="$VMSTAT"
-fi
+BEFORE=$(awk '/VMSTAT BEFORE/{flag=1;next}/PSI BEFORE/{flag=0}flag' "$LOG")
+AFTER=$(awk '/VMSTAT AFTER/{flag=1;next}/PSI AFTER/{flag=0}flag' "$LOG")
 
 get_val() {
-    KEY="$1"
-    BLOCK="$2"
-    echo "$BLOCK" | grep "^$KEY " | awk '{print $2}'
+    echo "$2" | grep "^$1 " | awk '{print $2}'
 }
 
 delta() {
-    KEY="$1"
-    B=$(get_val "$KEY" "$BEFORE")
-    A=$(get_val "$KEY" "$AFTER")
-
+    B=$(get_val "$1" "$BEFORE")
+    A=$(get_val "$1" "$AFTER")
     [ -z "$B" ] && B=0
     [ -z "$A" ] && A=0
-
     echo $((A - B))
 }
 
-# =========================
-# 🔥 MM (DELTA)
-# =========================
-echo "==== MEMORY (DELTA) ===="
-
-PGSCAN=$(delta pgscan_kswapd)
-PGSCAN_DIRECT=$(delta pgscan_direct)
-PGSTEAL=$(delta pgsteal_kswapd)
-PGSTEAL_DIRECT=$(delta pgsteal_direct)
-
-TOTAL_SCAN=$((PGSCAN + PGSCAN_DIRECT))
-TOTAL_STEAL=$((PGSTEAL + PGSTEAL_DIRECT))
-
+# ===== MM =====
+PGSCAN=$(( $(delta pgscan_kswapd) + $(delta pgscan_direct) ))
+PGSTEAL=$(( $(delta pgsteal_kswapd) + $(delta pgsteal_direct) ))
 REFAULT=$(delta workingset_refault)
-ACTIVATE=$(delta workingset_activate)
+DIRECT=$(delta pgscan_direct)
 
-echo "pgscan: $TOTAL_SCAN"
-echo "pgsteal: $TOTAL_STEAL"
-echo "refault: $REFAULT"
-echo "activate: $ACTIVATE"
-echo ""
+EFF=0
+[ "$PGSCAN" -gt 0 ] && EFF=$((PGSTEAL * 100 / PGSCAN))
 
-# =========================
-# 🔥 METRICS
-# =========================
-echo "==== METRICS ===="
+REF=0
+[ "$PGSTEAL" -gt 0 ] && REF=$((REFAULT * 100 / PGSTEAL))
 
-if [ "$TOTAL_SCAN" -gt 0 ]; then
-    EFF=$((TOTAL_STEAL * 100 / TOTAL_SCAN))
+NO_RECLAIM=0
+if [ "$PGSCAN" -eq 0 ] && [ "$DIRECT" -eq 0 ]; then
+    MM_SCORE=95
+    NO_RECLAIM=1
 else
-    EFF=0
-fi
+    MM_SCORE=$((EFF - REF))
 
-if [ "$TOTAL_STEAL" -gt 0 ]; then
-    REFAULT_RATE=$((REFAULT * 100 / TOTAL_STEAL))
-else
-    REFAULT_RATE=0
-fi
-
-if [ "$REFAULT" -gt 0 ]; then
-    ACT_RATE=$((ACTIVATE * 100 / REFAULT))
-else
-    ACT_RATE=0
-fi
-
-echo "Efficiency: $EFF%"
-echo "Refault rate: $REFAULT_RATE%"
-echo "Activation success: $ACT_RATE%"
-echo ""
-
-# =========================
-# 🔥 VERDICT
-# =========================
-echo "==== VERDICT ===="
-
-if [ "$EFF" -gt 80 ]; then
-    MM="GOOD"
-elif [ "$EFF" -gt 60 ]; then
-    MM="OK"
-else
-    MM="BAD"
-fi
-
-if [ "$REFAULT_RATE" -lt 15 ]; then
-    RF="EXCELLENT"
-elif [ "$REFAULT_RATE" -lt 30 ]; then
-    RF="GOOD"
-elif [ "$REFAULT_RATE" -lt 60 ]; then
-    RF="OK"
-else
-    RF="BAD"
-fi
-
-echo "MM: $MM ($EFF%)"
-echo "Refault: $RF ($REFAULT_RATE%)"
-echo ""
-
-# =========================
-# 🔥 BEHAVIOR ANALYSIS
-# =========================
-echo "==== BEHAVIOR ===="
-
-if [ "$TOTAL_SCAN" -eq 0 ]; then
-    echo "No reclaim activity detected"
-else
-    if [ "$REFAULT_RATE" -gt 40 ]; then
-        echo "⚠️ Reclaim terlalu agresif"
-    elif [ "$REFAULT_RATE" -lt 15 ]; then
-        echo "✔️ Reclaim sangat stabil"
+    # soft penalty
+    if [ "$DIRECT" -gt 10000 ]; then
+        MM_SCORE=$((MM_SCORE - 25))
+    elif [ "$DIRECT" -gt 1000 ]; then
+        MM_SCORE=$((MM_SCORE - 10))
     fi
 fi
 
-if [ "$ACT_RATE" -lt 10 ]; then
-    echo "⚠️ Workingset activation rendah (normal di banyak kernel)"
-elif [ "$ACT_RATE" -gt 50 ]; then
-    echo "✔️ Workingset tracking bagus"
+[ "$MM_SCORE" -lt 0 ] && MM_SCORE=0
+[ "$MM_SCORE" -gt 100 ] && MM_SCORE=100
+
+# ===== PSI =====
+if [ "$HAS_PSI" -eq 1 ]; then
+    PSI_MEM=$(grep "some avg10" "$LOG" | tail -n1 | awk '{print $4}' | cut -d= -f2 | cut -d. -f1)
+    PSI_CPU=$(grep "cpu" -A1 "$LOG" | grep avg10 | awk '{print $2}' | cut -d= -f2 | cut -d. -f1)
+else
+    PSI_MEM=0
+    PSI_CPU=0
 fi
 
+[ -z "$PSI_MEM" ] && PSI_MEM=0
+[ -z "$PSI_CPU" ] && PSI_CPU=0
+
+PSI_SCORE=$((100 - PSI_MEM - PSI_CPU))
+[ "$PSI_SCORE" -lt 0 ] && PSI_SCORE=0
+
+# ===== SCHED =====
+LOAD=$(awk '/LOADAVG/{getline; print $1}' "$LOG" | cut -d. -f1)
+RUNQ=$(awk '/RUNQUEUE/{getline; print $2}' "$LOG")
+
+[ -z "$LOAD" ] && LOAD=0
+[ -z "$RUNQ" ] && RUNQ=0
+
+[ "$LOAD" -gt 16 ] && LOAD=16
+[ "$RUNQ" -gt 16 ] && RUNQ=16
+
+P_CPU=$((PSI_CPU * 2))
+P_RUNQ=$((RUNQ * 2))
+P_LOAD=$((LOAD * 1))
+
+TOTAL=$((P_CPU + P_RUNQ + P_LOAD))
+[ "$TOTAL" -gt 100 ] && TOTAL=100
+
+SCHED_SCORE=$((100 - TOTAL))
+[ "$SCHED_SCORE" -lt 0 ] && SCHED_SCORE=0
+
+# ===== MODE =====
+if [ "$NO_RECLAIM" -eq 1 ]; then
+    MODE="IDEAL"
+else
+    MODE="PRESSURE"
+fi
+
+# ===== OUTPUT =====
+echo "MM_SCORE=$MM_SCORE"
+echo "SCHED_SCORE=$SCHED_SCORE"
+echo "PSI_SCORE=$PSI_SCORE"
+
 echo ""
-echo "=== DONE ==="
+echo "==== DETAIL ===="
+echo "pgscan: $PGSCAN"
+echo "pgsteal: $PGSTEAL"
+echo "efficiency: $EFF%"
+echo "refault: $REF%"
+echo "direct: $DIRECT"
+echo "load: $LOAD"
+echo "runq: $RUNQ"
+echo "psi_cpu: $PSI_CPU"
+echo "psi_mem: $PSI_MEM"
+echo "mode: $MODE"

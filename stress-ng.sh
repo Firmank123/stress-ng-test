@@ -1,41 +1,44 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-OUT="/sdcard/kernel_test_logs/kernel_test_$(date +%Y%m%d_%H%M%S).log"
+echo "=== CLEAN STATE ==="
+sync
+echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
 
-mkdir -p /sdcard/kernel_test_logs
+# preload memory biar konsisten
+echo "=== PRELOAD MEMORY ==="
+dd if=/dev/zero of=/dev/null bs=1M count=512 &
+PRELOAD_PID=$!
+sleep 2
 
-echo "=== KERNEL TEST START ===" | tee $OUT
-echo ""
+echo "=== VMSTAT BEFORE ==="
+cat /proc/vmstat
 
-# =========================
-# BASELINE
-# =========================
-echo "==== VMSTAT BEFORE ====" | tee -a $OUT
-cat /proc/vmstat | tee -a $OUT
+echo "=== PSI BEFORE ==="
+cat /proc/pressure/memory 2>/dev/null
+cat /proc/pressure/cpu 2>/dev/null
 
-echo "" | tee -a $OUT
+sleep 1
 
-sleep 3
+echo "=== STRESS ==="
+./stress-ng \
+    --cpu 8 \
+    --vm 4 \
+    --vm-bytes 80% \
+    --vm-keep \
+    --timeout 30s \
+    --metrics-brief
 
-# =========================
-# STRESS TEST
-# =========================
-echo "==== STRESS TEST ====" | tee -a $OUT
+kill $PRELOAD_PID 2>/dev/null
 
-./stress-ng --cpu 8 --vm 4 --vm-bytes 70% --timeout 30s --metrics-brief 2>&1 | tee -a $OUT
+echo "=== VMSTAT AFTER ==="
+cat /proc/vmstat
 
-echo "" | tee -a $OUT
+echo "=== PSI AFTER ==="
+cat /proc/pressure/memory 2>/dev/null
+cat /proc/pressure/cpu 2>/dev/null
 
-# =========================
-# AFTER
-# =========================
-echo "==== VMSTAT AFTER ====" | tee -a $OUT
-cat /proc/vmstat | tee -a $OUT
+echo "=== LOADAVG ==="
+cat /proc/loadavg
 
-echo "" | tee -a $OUT
-
-echo "==== MEMINFO ====" | tee -a $OUT
-cat /proc/meminfo | tee -a $OUT
-
-echo ""
-echo "Saved to: $OUT"
+echo "=== RUNQUEUE ==="
+cat /proc/stat | grep procs_running
