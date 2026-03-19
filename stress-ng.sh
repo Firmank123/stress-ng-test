@@ -42,3 +42,25 @@ cat /proc/loadavg
 
 echo "=== RUNQUEUE ==="
 cat /proc/stat | grep procs_running
+
+echo "=== EAS TEST ==="
+
+run_eas_phase() {
+    NAME=$1
+    LOAD=$2
+
+    echo "== $NAME LOAD =="
+
+    ./stress-ng --cpu $LOAD --timeout 10s --quiet &
+    PID=$!
+
+    sleep 3
+
+    ps -eo psr,comm | grep stress-ng | awk '{print $1}' | sort -n | uniq
+
+    wait $PID
+}
+
+run_eas_phase "LOW" 2
+run_eas_phase "MID" 4
+run_eas_phase "HIGH" 8
